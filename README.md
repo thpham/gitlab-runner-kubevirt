@@ -74,14 +74,49 @@ helm install gitlab-runner gitlab/gitlab-runner -f values.yaml
 
 ### Environment Variables
 
-Configure via GitLab CI variables:
+Configure via GitLab CI variables to customize VMs per-job:
 
 ```yaml
 variables:
+  # VM Configuration
   CUSTOM_ENV_VM_MACHINE_TYPE: "microvm"
   CUSTOM_ENV_VM_ARCHITECTURE: "aarch64"
   CUSTOM_ENV_CI_JOB_IMAGE: "registry.example.com/runner-arm64:latest"
   CUSTOM_ENV_VM_TTL: "3h"  # VM time-to-live for garbage collection
+
+  # Resource Allocation (overrides runner defaults)
+  CUSTOM_ENV_VM_CPU_REQUEST: "2"       # CPU cores requested
+  CUSTOM_ENV_VM_CPU_LIMIT: "4"         # CPU cores limit
+  CUSTOM_ENV_VM_MEMORY_REQUEST: "4Gi"  # Memory requested
+  CUSTOM_ENV_VM_MEMORY_LIMIT: "8Gi"    # Memory limit
+  CUSTOM_ENV_VM_STORAGE_REQUEST: "20Gi" # Ephemeral storage requested
+  CUSTOM_ENV_VM_STORAGE_LIMIT: "50Gi"   # Ephemeral storage limit
+```
+
+**Resource Configuration Hierarchy:**
+1. GitLab CI job variables (highest priority) - per-job customization
+2. Runner default values (fallback) - set in Helm chart `prepare_args`
+
+**Example: Different resources for different job types**
+
+```yaml
+# .gitlab-ci.yml
+unit-tests:
+  variables:
+    CUSTOM_ENV_VM_CPU_REQUEST: "1"
+    CUSTOM_ENV_VM_MEMORY_REQUEST: "2Gi"
+  script:
+    - make test
+
+build-heavy:
+  variables:
+    CUSTOM_ENV_VM_CPU_REQUEST: "8"
+    CUSTOM_ENV_VM_CPU_LIMIT: "16"
+    CUSTOM_ENV_VM_MEMORY_REQUEST: "16Gi"
+    CUSTOM_ENV_VM_MEMORY_LIMIT: "32Gi"
+    CUSTOM_ENV_VM_STORAGE_REQUEST: "100Gi"
+  script:
+    - make build-all
 ```
 
 ### Garbage Collection

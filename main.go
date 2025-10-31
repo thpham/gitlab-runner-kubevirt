@@ -60,7 +60,16 @@ var cli struct {
 	Architecture string `name:"architecture" env:"CUSTOM_ENV_VM_ARCHITECTURE"`
 	Namespace    string `name:"namespace" env:"KUBEVIRT_NAMESPACE" default:"gitlab-runner"`
 	VMTTL        string `name:"vm-ttl" env:"CUSTOM_ENV_VM_TTL" help:"VM time-to-live for garbage collection (e.g., '3h', '24h')"`
-	Debug        bool
+
+	// Resource configuration (per-job override via GitLab CI variables)
+	CPURequest              string `name:"cpu-request" env:"CUSTOM_ENV_VM_CPU_REQUEST" help:"CPU request (e.g., '1', '2', '500m')"`
+	CPULimit                string `name:"cpu-limit" env:"CUSTOM_ENV_VM_CPU_LIMIT" help:"CPU limit (e.g., '2', '4')"`
+	MemoryRequest           string `name:"memory-request" env:"CUSTOM_ENV_VM_MEMORY_REQUEST" help:"Memory request (e.g., '1Gi', '2Gi', '512Mi')"`
+	MemoryLimit             string `name:"memory-limit" env:"CUSTOM_ENV_VM_MEMORY_LIMIT" help:"Memory limit (e.g., '2Gi', '4Gi')"`
+	EphemeralStorageRequest string `name:"ephemeral-storage-request" env:"CUSTOM_ENV_VM_STORAGE_REQUEST" help:"Ephemeral storage request (e.g., '10Gi', '20Gi')"`
+	EphemeralStorageLimit   string `name:"ephemeral-storage-limit" env:"CUSTOM_ENV_VM_STORAGE_LIMIT" help:"Ephemeral storage limit (e.g., '20Gi', '50Gi')"`
+
+	Debug bool
 
 	Config  ConfigCmd  `cmd`
 	Prepare PrepareCmd `cmd`
@@ -109,6 +118,14 @@ func contextFromEnv() *JobContext {
 	jctx.Namespace = cli.Namespace
 	jctx.MachineType = cli.MachineType
 	jctx.Architecture = cli.Architecture
+
+	// Resource configuration (per-job override via GitLab CI variables)
+	jctx.CPURequest = cli.CPURequest
+	jctx.CPULimit = cli.CPULimit
+	jctx.MemoryRequest = cli.MemoryRequest
+	jctx.MemoryLimit = cli.MemoryLimit
+	jctx.EphemeralStorageRequest = cli.EphemeralStorageRequest
+	jctx.EphemeralStorageLimit = cli.EphemeralStorageLimit
 
 	jctx.ProjectID = cli.ProjectID
 	jctx.JobID = cli.JobID
