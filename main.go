@@ -1,0 +1,144 @@
+package main
+
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/binary"
+	"fmt"
+	"hash"
+	"io"
+	"os"
+	"strconv"
+
+	"github.com/alecthomas/kong"
+)
+
+type JobContext struct {
+	ID              string
+	BaseName        string
+	Image           string
+	ImagePullPolicy string
+	ImagePullSecret string
+	Namespace       string
+	MachineType     string
+	Architecture    string
+
+	CPURequest              string
+	CPULimit                string
+	MemoryRequest           string
+	MemoryLimit             string
+	EphemeralStorageRequest string
+	EphemeralStorageLimit   string
+	Timezone                string
+
+	ProjectID    string
+	JobID        string
+	JobName      string
+	JobRef       string
+	JobSha       string
+	JobBeforeSha string
+	JobURL       string
+}
+
+var cli struct {
+	RunnerID     string `name:"runner-id" env:"CUSTOM_ENV_CI_RUNNER_ID"`
+	ProjectID    string `name:"project-id" env:"CUSTOM_ENV_CI_PROJECT_ID"`
+	ConcurrentID string `name:"concurrent-id" env:"CUSTOM_ENV_CI_CONCURRENT_PROJECT_ID"`
+	JobID        string `name:"job-id" env:"CUSTOM_ENV_CI_JOB_ID"`
+	JobName      string `name:"job-name" env:"CUSTOM_ENV_CI_COMMIT_BEFORE_SHA"`
+	JobRef       string `name:"job-ref" env:"CUSTOM_ENV_CI_COMMIT_REF_NAME"`
+	JobSha       string `name:"job-sha" env:"CUSTOM_ENV_CI_COMMIT_SHA"`
+	JobBeforeSha string `name:"job-before-sha" env:"CUSTOM_ENV_CI_COMMIT_BEFORE_SHA"`
+	JobURL       string `name:"job-url" env:"CUSTOM_ENV_CI_JOB_URL"`
+	JobImage     string `name:"image" env:"CUSTOM_ENV_CI_JOB_IMAGE"`
+	MachineType  string `name:"machine-type" env:"CUSTOM_ENV_VM_MACHINE_TYPE"`
+	Architecture string `name:"architecture" env:"CUSTOM_ENV_VM_ARCHITECTURE"`
+	Namespace    string `name:"namespace" env:"KUBEVIRT_NAMESPACE" default:"gitlab-runner"`
+	Debug        bool
+
+	Config  ConfigCmd  `cmd`
+	Prepare PrepareCmd `cmd`
+	Run     RunCmd     `cmd`
+	Cleanup CleanupCmd `cmd`
+}
+
+var Debug io.Writer = io.Discard
+
+func main() {
+
+	ctx := kong.Parse(&cli)
+
+	if cli.Debug {
+		Debug = os.Stderr
+	}
+
+	jctx := contextFromEnv()
+
+	ctx.Bind(jctx)
+	ctx.BindToProvider(KubeClient)
+	ctx.BindToProvider(func() (context.Context, error) {
+		return context.Background(), nil
+	})
+
+	if err := ctx.Run(jctx); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], err)
+		systemFailureExit()
+	}
+}
+
+func contextFromEnv() *JobContext {
+	var jctx JobContext
+	jctx.BaseName = fmt.Sprintf(`runner-%s-project-%s-concurrent-%s`, cli.RunnerID, cli.ProjectID, cli.ConcurrentID)
+	jctx.ID = digest(sha1.New, cli.RunnerID, cli.ProjectID, cli.ConcurrentID, cli.JobID)
+	jctx.Image = cli.JobImage
+	jctx.Namespace = cli.Namespace
+	jctx.MachineType = cli.MachineType
+	jctx.Architecture = cli.Architecture
+
+	jctx.ProjectID = cli.ProjectID
+	jctx.JobID = cli.JobID
+	jctx.JobName = cli.JobName
+	jctx.JobRef = cli.JobRef
+	jctx.JobSha = cli.JobSha
+	jctx.JobBeforeSha = cli.JobBeforeSha
+	jctx.JobURL = cli.JobURL
+	return &jctx
+}
+
+func digest(hashfunc func() hash.Hash, v ...interface{}) string {
+	digest := hashfunc()
+	binary.Write(digest, binary.BigEndian, len(v))
+	for _, e := range v {
+		switch e := e.(type) {
+		case string:
+			binary.Write(digest, binary.BigEndian, len(e))
+			io.WriteString(digest, e)
+		case []byte:
+			binary.Write(digest, binary.BigEndian, len(e))
+			digest.Write(e)
+		default:
+			binary.Write(digest, binary.BigEndian, e)
+		}
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil))
+}
+
+func envExit(status int, env string) {
+	if code := os.Getenv(env); code != "" {
+		val, err := strconv.Atoi(code)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s=%s is not a valid exit code: %v\n", env, code, err)
+		} else {
+			status = val
+		}
+	}
+	os.Exit(status)
+}
+
+func systemFailureExit() {
+	envExit(2, "SYSTEM_FAILURE_EXIT_CODE")
+}
+
+func buildFailureExit() {
+	envExit(1, "BUILD_FAILURE_EXIT_CODE")
+}

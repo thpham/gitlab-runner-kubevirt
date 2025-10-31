@@ -1,0 +1,44 @@
+# Binary
+gitlab-runner-kubevirt
+
+# Kubernetes configs
+kubeconfig
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage
+coverage.out
+coverage.html
+*.coverprofile
+
+# Go workspace
+vendor/
+
+# Build directories
+dist/
+build/
+
+# Nix
+result
+result-*
+.direnv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+*.log

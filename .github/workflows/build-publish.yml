@@ -1,0 +1,149 @@
+name: Build and Publish
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  push:
+    branches: [ main ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-multiarch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-platforms = x86_64-linux aarch64-linux
+            extra-system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Setup Nix cache
+        uses: cachix/cachix-action@v15
+        with:
+          name: gitlab-runner-kubevirt
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          skipPush: ${{ github.event_name == 'pull_request' }}
+
+      - name: Setup QEMU and buildah for multi-arch
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support buildah
+
+      - name: Extract version and setup tags
+        id: meta
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-dev")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Determine tags to create
+          TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS="$TAGS,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION_TAG=${GITHUB_REF#refs/tags/}
+            TAGS="$TAGS,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION_TAG}"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Build multi-arch images in parallel
+        run: |
+          echo "Building AMD64 and ARM64 images in parallel with Nix..."
+
+          # Build both architectures with explicit output names and capture logs
+          echo "Starting AMD64 build..."
+          nix build .#packages.x86_64-linux.container -o result-amd64 --print-build-logs 2>&1 | tee build-amd64.log &
+          PID_AMD64=$!
+
+          echo "Starting ARM64 build..."
+          nix build .#packages.aarch64-linux.container -o result-arm64 --print-build-logs 2>&1 | tee build-arm64.log &
+          PID_ARM64=$!
+
+          # Wait for both builds to complete and check exit codes
+          wait $PID_AMD64
+          AMD64_EXIT=$?
+
+          wait $PID_ARM64
+          ARM64_EXIT=$?
+
+          # Check if builds succeeded
+          if [ $AMD64_EXIT -ne 0 ]; then
+            echo "❌ AMD64 build failed!"
+            cat build-amd64.log
+            exit 1
+          fi
+
+          if [ $ARM64_EXIT -ne 0 ]; then
+            echo "❌ ARM64 build failed!"
+            cat build-arm64.log
+            exit 1
+          fi
+
+          echo "✓ Both architectures built successfully"
+          ls -lh result-*
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        run: |
+          buildah login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
+
+      - name: Create and push multi-arch manifest with buildah
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          # Create manifest list
+          buildah manifest create multiarch-manifest
+
+          # Load and add AMD64 image to manifest (already built)
+          AMD64_ID=$(buildah pull docker-archive:result-amd64)
+          buildah manifest add --arch amd64 --os linux multiarch-manifest containers-storage:$AMD64_ID
+
+          # Load and add ARM64 image to manifest (already built)
+          ARM64_ID=$(buildah pull docker-archive:result-arm64)
+          buildah manifest add --arch arm64 --os linux multiarch-manifest containers-storage:$ARM64_ID
+
+          # Push all tags from the manifest
+          IFS=',' read -ra TAG_ARRAY <<< "${{ steps.meta.outputs.tags }}"
+          for tag in "${TAG_ARRAY[@]}"; do
+            echo "Pushing multi-arch manifest to: $tag"
+            buildah manifest push --all multiarch-manifest docker://$tag
+          done
+
+          echo "✓ Multi-arch images published successfully"
+
+      - name: Run security scan
+        if: github.event_name != 'pull_request'
+        run: |
+          docker load < result-amd64
+          docker scout cves ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }} || true
+
+      - name: Verify multi-arch manifest
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Inspecting multi-arch manifest..."
+          buildah manifest inspect multiarch-manifest
+
+          echo ""
+          echo "Verifying registry manifest..."
+          skopeo inspect docker://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
