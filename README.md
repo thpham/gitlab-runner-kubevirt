@@ -81,6 +81,47 @@ variables:
   CUSTOM_ENV_VM_MACHINE_TYPE: "microvm"
   CUSTOM_ENV_VM_ARCHITECTURE: "aarch64"
   CUSTOM_ENV_CI_JOB_IMAGE: "registry.example.com/runner-arm64:latest"
+  CUSTOM_ENV_VM_TTL: "3h"  # VM time-to-live for garbage collection
+```
+
+### Garbage Collection
+
+Orphaned VMs are automatically tagged with TTL labels for cleanup:
+
+```bash
+# List VMs with their expiration info
+kubectl get vmi -n gitlab-runner -l io.kubevirt.gitlab-runner/id --show-labels
+
+# Manual cleanup of expired VMs
+gitlab-runner-kubevirt gc --namespace gitlab-runner
+
+# Dry-run mode (see what would be deleted)
+gitlab-runner-kubevirt gc --dry-run
+
+# Custom max age
+gitlab-runner-kubevirt gc --max-age 1h
+```
+
+**Automated cleanup** with CronJob:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gitlab-runner-vm-gc
+  namespace: gitlab-runner
+spec:
+  schedule: "*/15 * * * *"  # Every 15 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: gitlab-runner
+          containers:
+          - name: gc
+            image: ghcr.io/thpham/gitlab-runner-kubevirt:latest
+            args: ["gc", "--max-age", "3h"]
+          restartPolicy: OnFailure
 ```
 
 ## Development

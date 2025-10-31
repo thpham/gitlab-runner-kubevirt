@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/alecthomas/kong"
 )
@@ -38,6 +39,10 @@ type JobContext struct {
 	JobSha       string
 	JobBeforeSha string
 	JobURL       string
+
+	// Garbage collection metadata
+	CreatedAt string // RFC3339 timestamp
+	TTL       string // Duration string (e.g., "1h", "24h")
 }
 
 var cli struct {
@@ -54,12 +59,14 @@ var cli struct {
 	MachineType  string `name:"machine-type" env:"CUSTOM_ENV_VM_MACHINE_TYPE"`
 	Architecture string `name:"architecture" env:"CUSTOM_ENV_VM_ARCHITECTURE"`
 	Namespace    string `name:"namespace" env:"KUBEVIRT_NAMESPACE" default:"gitlab-runner"`
+	VMTTL        string `name:"vm-ttl" env:"CUSTOM_ENV_VM_TTL" help:"VM time-to-live for garbage collection (e.g., '3h', '24h')"`
 	Debug        bool
 
 	Config  ConfigCmd  `cmd`
 	Prepare PrepareCmd `cmd`
 	Run     RunCmd     `cmd`
 	Cleanup CleanupCmd `cmd`
+	GC      GCCmd      `cmd:"gc" help:"Garbage collect expired VMs"`
 }
 
 var Debug io.Writer = io.Discard
@@ -88,8 +95,16 @@ func main() {
 
 func contextFromEnv() *JobContext {
 	var jctx JobContext
+
+	// Generate timestamp for uniqueness guarantee
+	now := time.Now()
+	jctx.CreatedAt = now.Format(time.RFC3339)
+
 	jctx.BaseName = fmt.Sprintf(`runner-%s-project-%s-concurrent-%s`, cli.RunnerID, cli.ProjectID, cli.ConcurrentID)
-	jctx.ID = digest(sha1.New, cli.RunnerID, cli.ProjectID, cli.ConcurrentID, cli.JobID)
+
+	// Include timestamp in ID to guarantee uniqueness (improvement #4)
+	jctx.ID = digest(sha1.New, cli.RunnerID, cli.ProjectID, cli.ConcurrentID, cli.JobID, now.UnixNano())
+
 	jctx.Image = cli.JobImage
 	jctx.Namespace = cli.Namespace
 	jctx.MachineType = cli.MachineType
@@ -102,6 +117,13 @@ func contextFromEnv() *JobContext {
 	jctx.JobSha = cli.JobSha
 	jctx.JobBeforeSha = cli.JobBeforeSha
 	jctx.JobURL = cli.JobURL
+
+	// TTL for garbage collection (improvement #2)
+	jctx.TTL = cli.VMTTL
+	if jctx.TTL == "" {
+		jctx.TTL = "3h" // Default 3 hours
+	}
+
 	return &jctx
 }
 

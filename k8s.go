@@ -142,7 +142,9 @@ func CreateJobVM(
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: jctx.BaseName,
 			Labels: map[string]string{
-				labelPrefix + "/id": jctx.ID,
+				labelPrefix + "/id":         jctx.ID,
+				labelPrefix + "/created-at": jctx.CreatedAt,
+				labelPrefix + "/ttl":        jctx.TTL,
 			},
 			Annotations: map[string]string{
 				// These annotations are set by the Kubernetes executor; borrow
