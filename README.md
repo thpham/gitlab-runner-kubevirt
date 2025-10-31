@@ -473,6 +473,69 @@ nix build .#packages.aarch64-linux.container
 docker load < result
 ```
 
+## Base Images for KubeVirt VMs
+
+Pre-configured VM images with comprehensive tooling for CI/CD workloads, similar to GitHub Actions hosted runners.
+
+### Available Images
+
+Located in [`microvm/`](microvm/) directory:
+
+#### NixOS Images
+
+- **nixos-base**: Full-featured build environment with multi-language support (Go, Node.js, Python, Ruby, Java), build tools (gcc, clang, make, cmake), container tools (Docker, Podman, Buildah), Kubernetes tools (kubectl, helm, k9s), and cloud CLIs (AWS, Azure, GCP)
+- **nixos-runner**: Extends nixos-base with automatic GitLab Runner registration and lifecycle management
+
+### Quick Start with Base Images
+
+```bash
+# Build NixOS runner image (Linux only)
+nix build .#nixos-runner
+
+# Deploy to KubeVirt
+kubectl apply -f microvm/nixos/vm-template.yaml
+
+# Check runner status
+kubectl get vmi -n gitlab-runner
+```
+
+### Using Pre-built Base Images
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: gitlab-runner-nixos
+spec:
+  template:
+    spec:
+      volumes:
+        - name: containerdisk
+          containerDisk:
+            image: ghcr.io/thpham/gitlab-runner-kubevirt/nixos-runner:latest
+```
+
+**Complete documentation**: See [`microvm/README.md`](microvm/README.md)
+
+### Building Custom Images
+
+```nix
+# microvm/nixos/custom.nix
+{ config, pkgs, lib, ... }:
+{
+  imports = [ ./base.nix ];
+
+  environment.systemPackages = with pkgs; [
+    myCustomTool
+  ];
+}
+```
+
+```bash
+# Add to flake.nix packages, then build
+nix build .#nixos-custom
+```
+
 ## Contributing
 
 1. Fork the repository

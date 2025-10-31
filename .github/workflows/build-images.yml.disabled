@@ -1,0 +1,252 @@
+name: Build NixOS VM Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+    paths:
+      - "microvm/nixos/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-images.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "microvm/nixos/**"
+      - "flake.nix"
+      - "flake.lock"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Extract metadata for versioning
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: meta
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-dev")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+  # Build NixOS runner image for x86_64
+  build-nixos-runner-x86_64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove largest directories only (skip docker prune - it can hang)
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            max-jobs = auto
+            cores = 0
+
+      - name: Setup Nix cache
+        uses: cachix/cachix-action@v16
+        continue-on-error: true
+        with:
+          name: gitlab-runner-kubevirt
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ github.event_name == 'pull_request' }}
+
+      - name: Build NixOS runner QCOW2 image
+        timeout-minutes: 60
+        run: |
+          echo "Building NixOS runner image for x86_64..."
+          nix build .#nixos-runner \
+            --print-build-logs \
+            --keep-going \
+            -o result-nixos-runner-x86_64
+
+          echo "Build complete"
+          ls -lh result-nixos-runner-x86_64
+          file result-nixos-runner-x86_64
+
+      - name: Compress QCOW2 image
+        run: |
+          echo "=� Compressing QCOW2 image..."
+          cp result-nixos-runner-x86_64 nixos-runner-x86_64.qcow2
+          zstd -19 -T0 nixos-runner-x86_64.qcow2 -o nixos-runner-x86_64.qcow2.zst
+
+          echo "Original size:"
+          ls -lh nixos-runner-x86_64.qcow2
+          echo "Compressed size:"
+          ls -lh nixos-runner-x86_64.qcow2.zst
+
+          # Calculate checksums
+          sha256sum nixos-runner-x86_64.qcow2.zst > nixos-runner-x86_64.qcow2.zst.sha256
+          cat nixos-runner-x86_64.qcow2.zst.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: nixos-runner-x86_64
+          path: |
+            nixos-runner-x86_64.qcow2.zst
+            nixos-runner-x86_64.qcow2.zst.sha256
+          retention-days: 1
+          compression-level: 0 # Already compressed with zstd
+
+      - name: Upload to release (on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nixos-runner-x86_64.qcow2.zst
+            nixos-runner-x86_64.qcow2.zst.sha256
+          body: |
+            ## NixOS Runner VM Image - x86_64
+
+            Version: ${{ needs.prepare.outputs.version }}
+
+            ### Download & Usage
+
+            ```bash
+            # Download the image
+            wget https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.version }}/nixos-runner-x86_64.qcow2.zst
+
+            # Verify checksum
+            wget https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare.outputs.version }}/nixos-runner-x86_64.qcow2.zst.sha256
+            sha256sum -c nixos-runner-x86_64.qcow2.zst.sha256
+
+            # Decompress
+            zstd -d nixos-runner-x86_64.qcow2.zst
+
+            # Upload to Kubernetes PVC using virtctl
+            kubectl virt image-upload pvc nixos-runner-pvc \
+              --image-path=nixos-runner-x86_64.qcow2 \
+              --size=20Gi \
+              --uploadproxy-url=https://cdi-uploadproxy.cluster.local \
+              --insecure
+            ```
+
+            ### What's Included
+
+            - **Languages**: Go 1.24-1.25, Node.js 20/22/24, Python 3.11-3.13, Ruby 3.4, Java 11/17/21
+            - **Build Tools**: gcc, clang, make, cmake, ninja, just
+            - **Container Tools**: Docker, Podman, Buildah, Skopeo
+            - **Kubernetes**: kubectl, helm, kind, k3d, kustomize
+            - **Cloud CLIs**: AWS, Azure, GCP, Terraform, OpenTofu
+            - **GitLab Runner**: Automatic registration and lifecycle management
+
+            See [documentation](https://github.com/${{ github.repository }}/tree/main/microvm) for complete details.
+
+  # Build NixOS base image for x86_64 (optional, only on tags or manual dispatch)
+  build-nixos-base-x86_64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove largest directories only (skip docker prune - it can hang)
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            max-jobs = auto
+            cores = 0
+
+      - name: Setup Nix cache
+        uses: cachix/cachix-action@v16
+        continue-on-error: true
+        with:
+          name: gitlab-runner-kubevirt
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          skipPush: ${{ github.event_name == 'pull_request' }}
+
+      - name: Build NixOS base QCOW2 image
+        timeout-minutes: 60
+        run: |
+          echo "<Building NixOS base image for x86_64..."
+          nix build .#nixos-base \
+            --print-build-logs \
+            --keep-going \
+            -o result-nixos-base-x86_64
+
+          echo "Build complete"
+          ls -lh result-nixos-base-x86_64
+          file result-nixos-base-x86_64
+
+      - name: Compress QCOW2 image
+        run: |
+          echo "=� Compressing QCOW2 image..."
+          cp result-nixos-base-x86_64 nixos-base-x86_64.qcow2
+          zstd -19 -T0 nixos-base-x86_64.qcow2 -o nixos-base-x86_64.qcow2.zst
+
+          echo "Original size:"
+          ls -lh nixos-base-x86_64.qcow2
+          echo "Compressed size:"
+          ls -lh nixos-base-x86_64.qcow2.zst
+
+          # Calculate checksums
+          sha256sum nixos-base-x86_64.qcow2.zst > nixos-base-x86_64.qcow2.zst.sha256
+          cat nixos-base-x86_64.qcow2.zst.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: nixos-base-x86_64
+          path: |
+            nixos-base-x86_64.qcow2.zst
+            nixos-base-x86_64.qcow2.zst.sha256
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload to release (on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nixos-base-x86_64.qcow2.zst
+            nixos-base-x86_64.qcow2.zst.sha256

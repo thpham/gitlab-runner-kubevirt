@@ -224,7 +224,34 @@
 
             echo "Multi-arch image published: $IMAGE_NAME:$VERSION"
           '';
-        };
+        }
+        # NixOS base images for KubeVirt VMs (automatically builds for Linux even on macOS)
+        // (
+          let
+            # Use Linux packages for NixOS images with unfree packages enabled
+            linuxPkgs = import nixpkgs {
+              system = linuxSystem;
+              overlays = [ self.overlays.default ];
+              config = {
+                allowUnfree = true;
+              };
+            };
+
+            # Import the nixos image builder with Linux packages
+            nixosImages = import ./microvm/nixos/default.nix {
+              pkgs = linuxPkgs;
+              system = linuxSystem;
+              nixpkgsPath = nixpkgs;
+            };
+          in
+          {
+            # Base NixOS image with comprehensive tooling
+            nixos-base = nixosImages.base;
+
+            # NixOS image with GitLab Runner integration
+            nixos-runner = nixosImages.runner;
+          }
+        );
 
         # Development shell
         devShells.default = pkgs.mkShell {
