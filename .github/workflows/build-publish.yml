@@ -66,42 +66,21 @@ jobs:
 
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-      - name: Build multi-arch images in parallel
-        timeout-minutes: 10
+      - name: Build AMD64 image
+        timeout-minutes: 30
         run: |
-          echo "Building AMD64 and ARM64 images in parallel with Nix..."
+          echo "Building AMD64 image with Nix..."
+          nix build .#packages.x86_64-linux.container -o result-amd64 --print-build-logs --keep-going
+          echo "✓ AMD64 build complete"
+          ls -lh result-amd64
 
-          # Build both architectures with explicit output names and capture logs
-          echo "Starting AMD64 build..."
-          nix build .#packages.x86_64-linux.container -o result-amd64 --print-build-logs --keep-going 2>&1 | tee build-amd64.log &
-          PID_AMD64=$!
-
-          echo "Starting ARM64 build..."
-          nix build .#packages.aarch64-linux.container -o result-arm64 --print-build-logs --keep-going 2>&1 | tee build-arm64.log &
-          PID_ARM64=$!
-
-          # Wait for both builds to complete and check exit codes
-          wait $PID_AMD64
-          AMD64_EXIT=$?
-
-          wait $PID_ARM64
-          ARM64_EXIT=$?
-
-          # Check if builds succeeded
-          if [ $AMD64_EXIT -ne 0 ]; then
-            echo "❌ AMD64 build failed!"
-            tail -100 build-amd64.log
-            exit 1
-          fi
-
-          if [ $ARM64_EXIT -ne 0 ]; then
-            echo "❌ ARM64 build failed!"
-            tail -100 build-arm64.log
-            exit 1
-          fi
-
-          echo "✓ Both architectures built successfully"
-          ls -lh result-*
+      - name: Build ARM64 image
+        timeout-minutes: 30
+        run: |
+          echo "Building ARM64 image with Nix..."
+          nix build .#packages.aarch64-linux.container -o result-arm64 --print-build-logs --keep-going
+          echo "✓ ARM64 build complete"
+          ls -lh result-arm64
 
       - name: Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
