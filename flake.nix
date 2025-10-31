@@ -138,6 +138,18 @@
 
             echo "Multi-arch image published: $IMAGE_NAME:$VERSION"
           '';
+        }
+        # NixOS base images for KubeVirt VMs (Linux only)
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # Base NixOS image with comprehensive tooling
+          nixos-base = (pkgs.nixos {
+            imports = [ ./microvm/nixos/base.nix ];
+          }).config.system.build.qcow2;
+
+          # NixOS image with GitLab Runner integration
+          nixos-runner = (pkgs.nixos {
+            imports = [ ./microvm/nixos/runner.nix ];
+          }).config.system.build.qcow2;
         };
 
         # Development shell

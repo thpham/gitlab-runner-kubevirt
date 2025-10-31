@@ -1,13 +1,26 @@
 name: Build and Publish
 
 on:
-  schedule:
-    - cron: "37 3 * * *"
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-publish.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-publish.yml"
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io

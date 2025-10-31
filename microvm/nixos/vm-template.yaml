@@ -1,0 +1,97 @@
+---
+# VM template using DataVolume with HTTP source for QCOW2 images
+# Use this when you have QCOW2 images hosted on a web server
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: nixos-runner-dv
+spec:
+  source:
+    http:
+      url: "https://github.com/thpham/gitlab-runner-kubevirt/releases/download/v1.0.0/nixos-runner.qcow2"
+      # Optional: for authenticated downloads
+      # secretRef: "download-secret"
+  pvc:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 20Gi
+    # Optional: specify storage class
+    # storageClassName: "fast-ssd"
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: gitlab-runner-nixos
+  labels:
+    app: gitlab-runner
+    os: nixos
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: gitlab-runner-nixos
+        app: gitlab-runner
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+            - name: datavolumedisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            - name: runner-info
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+        resources:
+          requests:
+            memory: 4Gi
+            cpu: 2
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: datavolumedisk
+          dataVolume:
+            name: nixos-runner-dv
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: gitlab-runner-nixos
+              manage_etc_hosts: true
+              users:
+                - name: runner
+                  sudo: ALL=(ALL) NOPASSWD:ALL
+                  groups: wheel, docker
+                  shell: /bin/bash
+              runcmd:
+                - systemctl enable --now gitlab-runner-vm
+        - name: runner-info
+          configMap:
+            name: gitlab-runner-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-runner-config
+data:
+  runner.json: |
+    {
+      "name": "kubevirt-nixos-runner",
+      "url": "https://gitlab.com",
+      "token": "REPLACE_WITH_RUNNER_TOKEN",
+      "tags": ["nixos", "kubevirt", "docker"],
+      "executor": "shell"
+    }

@@ -82,18 +82,19 @@ variables:
   CUSTOM_ENV_VM_MACHINE_TYPE: "microvm"
   CUSTOM_ENV_VM_ARCHITECTURE: "aarch64"
   CUSTOM_ENV_CI_JOB_IMAGE: "registry.example.com/runner-arm64:latest"
-  CUSTOM_ENV_VM_TTL: "3h"  # VM time-to-live for garbage collection
+  CUSTOM_ENV_VM_TTL: "3h" # VM time-to-live for garbage collection
 
   # Resource Allocation (overrides runner defaults)
-  CUSTOM_ENV_VM_CPU_REQUEST: "2"       # CPU cores requested
-  CUSTOM_ENV_VM_CPU_LIMIT: "4"         # CPU cores limit
-  CUSTOM_ENV_VM_MEMORY_REQUEST: "4Gi"  # Memory requested
-  CUSTOM_ENV_VM_MEMORY_LIMIT: "8Gi"    # Memory limit
+  CUSTOM_ENV_VM_CPU_REQUEST: "2" # CPU cores requested
+  CUSTOM_ENV_VM_CPU_LIMIT: "4" # CPU cores limit
+  CUSTOM_ENV_VM_MEMORY_REQUEST: "4Gi" # Memory requested
+  CUSTOM_ENV_VM_MEMORY_LIMIT: "8Gi" # Memory limit
   CUSTOM_ENV_VM_STORAGE_REQUEST: "20Gi" # Ephemeral storage requested
-  CUSTOM_ENV_VM_STORAGE_LIMIT: "50Gi"   # Ephemeral storage limit
+  CUSTOM_ENV_VM_STORAGE_LIMIT: "50Gi" # Ephemeral storage limit
 ```
 
 **Resource Configuration Hierarchy:**
+
 1. GitLab CI job variables (highest priority) - per-job customization
 2. Runner default values (fallback) - set in Helm chart `prepare_args`
 
@@ -146,16 +147,16 @@ metadata:
   name: gitlab-runner-vm-gc
   namespace: gitlab-runner
 spec:
-  schedule: "*/15 * * * *"  # Every 15 minutes
+  schedule: "*/15 * * * *" # Every 15 minutes
   jobTemplate:
     spec:
       template:
         spec:
           serviceAccountName: gitlab-runner
           containers:
-          - name: gc
-            image: ghcr.io/thpham/gitlab-runner-kubevirt:latest
-            args: ["gc", "--max-age", "3h"]
+            - name: gc
+              image: ghcr.io/thpham/gitlab-runner-kubevirt:latest
+              args: ["gc", "--max-age", "3h"]
           restartPolicy: OnFailure
 ```
 
@@ -190,6 +191,7 @@ make help           # Show all commands
 ### Development Environment
 
 The Nix flake provides:
+
 - Go 1.24 toolchain
 - Kubernetes tools (kubectl, helm, k9s, kind)
 - Container tools (docker, podman, skopeo)
@@ -218,6 +220,7 @@ make release-multiarch
 The project automatically builds **multi-arch container images** for AMD64 and ARM64 via GitHub Actions.
 
 **Available images:**
+
 ```bash
 # Multi-arch manifest (automatically selects the right architecture)
 ghcr.io/thpham/gitlab-runner-kubevirt:latest
@@ -227,11 +230,13 @@ ghcr.io/thpham/gitlab-runner-kubevirt:v1.0.0
 When you pull the image, Docker/Podman/containerd automatically selects the correct architecture for your platform - **no need for architecture-specific tags!**
 
 **Verify multi-arch support:**
+
 ```bash
 docker manifest inspect ghcr.io/thpham/gitlab-runner-kubevirt:latest
 ```
 
 **Build locally for specific architecture:**
+
 ```bash
 # AMD64
 nix build .#packages.x86_64-linux.container
@@ -240,6 +245,69 @@ docker load < result
 # ARM64
 nix build .#packages.aarch64-linux.container
 docker load < result
+```
+
+## Base Images for KubeVirt VMs
+
+Pre-configured VM images with comprehensive tooling for CI/CD workloads, similar to GitHub Actions hosted runners.
+
+### Available Images
+
+Located in [`microvm/`](microvm/) directory:
+
+#### NixOS Images
+
+- **nixos-base**: Full-featured build environment with multi-language support (Go, Node.js, Python, Ruby, Java), build tools (gcc, clang, make, cmake), container tools (Docker, Podman, Buildah), Kubernetes tools (kubectl, helm, k9s), and cloud CLIs (AWS, Azure, GCP)
+- **nixos-runner**: Extends nixos-base with automatic GitLab Runner registration and lifecycle management
+
+### Quick Start with Base Images
+
+```bash
+# Build NixOS runner image (Linux only)
+nix build .#nixos-runner
+
+# Deploy to KubeVirt
+kubectl apply -f microvm/nixos/vm-template.yaml
+
+# Check runner status
+kubectl get vmi -n gitlab-runner
+```
+
+### Using Pre-built Base Images
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: gitlab-runner-nixos
+spec:
+  template:
+    spec:
+      volumes:
+        - name: containerdisk
+          containerDisk:
+            image: ghcr.io/thpham/gitlab-runner-kubevirt/nixos-runner:latest
+```
+
+**Complete documentation**: See [`microvm/README.md`](microvm/README.md)
+
+### Building Custom Images
+
+```nix
+# microvm/nixos/custom.nix
+{ config, pkgs, lib, ... }:
+{
+  imports = [ ./base.nix ];
+
+  environment.systemPackages = with pkgs; [
+    myCustomTool
+  ];
+}
+```
+
+```bash
+# Add to flake.nix packages, then build
+nix build .#nixos-custom
 ```
 
 ## Contributing
