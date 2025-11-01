@@ -157,11 +157,16 @@
               # Create gitlab-runner user and group
               echo "gitlab-runner:x:999:999:GitLab Runner:/home/gitlab-runner:/bin/bash" > etc/passwd
               echo "gitlab-runner:x:999:" > etc/group
+            '';
 
-              # Create necessary directories
+            fakeRootCommands = ''
+              # Create necessary directories with proper ownership
               mkdir -p etc/gitlab-runner/certs
               mkdir -p home/gitlab-runner
               mkdir -p tmp
+
+              # Set ownership to gitlab-runner user (UID 999, GID 999)
+              chown -R 999:999 home/gitlab-runner
               chmod 1777 tmp
             '';
           };
