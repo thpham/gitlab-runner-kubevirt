@@ -306,6 +306,7 @@ jobs:
 
       - name: Sign multi-arch manifest
         if: github.event_name != 'pull_request'
+        timeout-minutes: 5
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -315,6 +316,7 @@ jobs:
 
       - name: Attest SBOMs to image
         if: github.event_name != 'pull_request'
+        timeout-minutes: 5
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
@@ -333,6 +335,7 @@ jobs:
 
       - name: Verify signature and attestations
         if: github.event_name != 'pull_request'
+        timeout-minutes: 10
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
