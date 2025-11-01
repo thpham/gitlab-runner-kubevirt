@@ -34,6 +34,44 @@
           else
             "v0.0.0-dev";
 
+        # Entrypoint script for GitLab Runner container
+        entrypoint = pkgs.writeShellScript "entrypoint" ''
+          # gitlab-runner data directory
+          DATA_DIR="/etc/gitlab-runner"
+          CONFIG_FILE=''${CONFIG_FILE:-$DATA_DIR/config.toml}
+
+          # custom certificate authority path
+          CA_CERTIFICATES_PATH=''${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
+          LOCAL_CA_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+          update_ca() {
+            echo "Updating CA certificates..."
+            # In Nix containers, we combine custom CA with system CA bundle
+            if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
+              # Create temporary combined certificate bundle
+              cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt "''${CA_CERTIFICATES_PATH}" > /tmp/ca-bundle-combined.crt
+              export SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
+              export NIX_SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
+              echo "Custom CA certificate added to bundle"
+            fi
+          }
+
+          # Check if custom CA certificate exists and update if needed
+          if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
+            update_ca
+          else
+            # Use default Nix CA bundle
+            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+            export NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          fi
+
+          # Ensure data directory exists
+          mkdir -p "''${DATA_DIR}"
+
+          # Launch gitlab-runner passing all arguments
+          exec ${pkgs.gitlab-runner}/bin/gitlab-runner "$@"
+        '';
+
       in
       {
         # Package outputs
@@ -91,10 +129,13 @@
             ];
 
             config = {
-              Cmd = [ "/bin/gitlab-runner-kubevirt" ];
+              Entrypoint = [ "${entrypoint}" ];
+              Cmd = [ "run" ];
+              User = "gitlab-runner:gitlab-runner";
               Env = [
                 "PATH=/bin"
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "HOME=/home/gitlab-runner"
               ];
               Labels = {
                 "org.opencontainers.image.source" = "https://github.com/thpham/gitlab-runner-kubevirt";
@@ -104,12 +145,24 @@
             };
 
             # Set the architecture for the image
-            architecture = if system == "x86_64-linux" then "amd64"
-                          else if system == "aarch64-linux" then "arm64"
-                          else pkgs.stdenv.hostPlatform.linuxArch;
+            architecture =
+              if system == "x86_64-linux" then
+                "amd64"
+              else if system == "aarch64-linux" then
+                "arm64"
+              else
+                pkgs.stdenv.hostPlatform.linuxArch;
 
             extraCommands = ''
-              mkdir -p bin
+              # Create gitlab-runner user and group
+              echo "gitlab-runner:x:999:999:GitLab Runner:/home/gitlab-runner:/bin/bash" > etc/passwd
+              echo "gitlab-runner:x:999:" > etc/group
+
+              # Create necessary directories
+              mkdir -p etc/gitlab-runner/certs
+              mkdir -p home/gitlab-runner
+              mkdir -p tmp
+              chmod 1777 tmp
             '';
           };
 
