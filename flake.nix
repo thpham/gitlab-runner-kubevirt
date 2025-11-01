@@ -78,7 +78,7 @@
         packages = {
           default = self.packages.${system}.gitlab-runner-kubevirt;
 
-          gitlab-runner-kubevirt = pkgs.buildGoModule {
+          gitlab-runner-kubevirt = pkgs.buildGoModule.override { go = pkgs.go_1_24; } {
             pname = "gitlab-runner-kubevirt";
             inherit version;
 
