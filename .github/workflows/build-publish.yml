@@ -267,14 +267,7 @@ jobs:
           buildah manifest add --arch arm64 --os linux "${ANNOTATIONS[@]}" \
             multiarch-manifest containers-storage:$ARM64_ID
 
-          echo "🏷️  Adding OCI annotations to multi-arch manifest..."
-          # Annotate the manifest list/index itself (not just individual images)
-          ## --index arg is not present in ubuntu image yet.
-          for annotation in "${ANNOTATIONS[@]}"; do
-            buildah manifest annotate $annotation multiarch-manifest
-          done
-
-          echo "✓ OCI annotations added to manifest and both architectures (timestamp: $CREATED)"
+          echo "✓ OCI annotations added to both architectures (timestamp: $CREATED)"
 
           echo "🚀 Pushing multi-arch manifest to registry..."
           IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
