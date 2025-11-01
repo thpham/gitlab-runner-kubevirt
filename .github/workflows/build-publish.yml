@@ -1,20 +1,33 @@
 name: Build and Publish
 
 on:
-  schedule:
-    - cron: "37 3 * * *"
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-publish.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-publish.yml"
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Metadata extraction job to share version/tags across all jobs
+  # Metadata extraction job
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -22,7 +35,7 @@ jobs:
       tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -48,19 +61,38 @@ jobs:
           echo "Version: $VERSION"
           echo "Tags: $TAGS"
 
-  # Native AMD64 build
-  build-amd64:
+  # Build and scan with matrix strategy (parallel execution)
+  build-and-scan:
     needs: prepare
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: amd64
+            runner: ubuntu-latest
+            nix-system: x86_64-linux
+          - name: arm64
+            runner: ubuntu-24.04-arm
+            nix-system: aarch64-linux
+    runs-on: ${{ matrix.arch.runner }}
     permissions:
       contents: read
+      security-events: write # For SARIF upload
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      # Cache Trivy vulnerability database (saves ~30s per run)
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
+        uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
@@ -72,63 +104,74 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           skipPush: ${{ github.event_name == 'pull_request' }}
 
-      - name: Build AMD64 image
+      - name: Build ${{ matrix.arch.name }} image
         timeout-minutes: 30
         run: |
-          echo "🏗️  Building AMD64 image (native x86_64)..."
-          nix build .#packages.x86_64-linux.container -o result-amd64 --print-build-logs --keep-going
-          echo "✓ AMD64 build complete"
-          ls -lh result-amd64
+          echo "🏗️  Building ${{ matrix.arch.name }} image (native ${{ matrix.arch.nix-system }})..."
+          nix build .#packages.${{ matrix.arch.nix-system }}.container \
+            -o result-${{ matrix.arch.name }} \
+            --print-build-logs \
+            --keep-going
+          echo "✓ ${{ matrix.arch.name }} build complete"
+          ls -lh result-${{ matrix.arch.name }}
 
-      - name: Upload AMD64 artifact
-        uses: actions/upload-artifact@v4
+      # Security scanning (runs in parallel with other architecture)
+      - name: Generate SBOM (${{ matrix.arch.name }})
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@0.33.1
         with:
-          name: container-amd64
-          path: result-amd64
-          retention-days: 1
+          input: result-${{ matrix.arch.name }}
+          format: "cyclonedx"
+          output: "sbom-${{ matrix.arch.name }}.json"
+          scan-type: "image"
 
-  # Native ARM64 build
-  build-arm64:
-    needs: prepare
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
+      - name: Vulnerability scan SARIF (${{ matrix.arch.name }})
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@0.33.1
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
+          input: result-${{ matrix.arch.name }}
+          format: "sarif"
+          output: "trivy-${{ matrix.arch.name }}.sarif"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          timeout: "10m"
 
-      - name: Setup Nix cache
-        uses: cachix/cachix-action@v16
+      - name: Upload SARIF (${{ matrix.arch.name }})
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
         continue-on-error: true
         with:
-          name: gitlab-runner-kubevirt
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
-          skipPush: ${{ github.event_name == 'pull_request' }}
+          sarif_file: "trivy-${{ matrix.arch.name }}.sarif"
+          category: "container-scan-${{ matrix.arch.name }}"
 
-      - name: Build ARM64 image
-        timeout-minutes: 30
-        run: |
-          echo "🏗️  Building ARM64 image (native aarch64)..."
-          nix build .#packages.aarch64-linux.container -o result-arm64 --print-build-logs --keep-going
-          echo "✓ ARM64 build complete"
-          ls -lh result-arm64
-
-      - name: Upload ARM64 artifact
-        uses: actions/upload-artifact@v4
+      - name: Vulnerability scan table (${{ matrix.arch.name }})
+        if: github.event_name != 'pull_request' && matrix.arch.name == 'amd64'
+        uses: aquasecurity/trivy-action@0.33.1
+        continue-on-error: true
         with:
-          name: container-arm64
-          path: result-arm64
+          input: result-${{ matrix.arch.name }}
+          format: "table"
+          severity: "CRITICAL,HIGH"
+          timeout: "10m"
+
+      # Upload artifacts
+      - name: Upload ${{ matrix.arch.name }} image
+        uses: actions/upload-artifact@v5
+        with:
+          name: container-${{ matrix.arch.name }}
+          path: result-${{ matrix.arch.name }}
           retention-days: 1
 
-  # Assemble multi-arch manifest and publish
+      - name: Upload ${{ matrix.arch.name }} SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sbom-${{ matrix.arch.name }}
+          path: sbom-${{ matrix.arch.name }}.json
+          retention-days: 90
+
+  # Assemble multi-arch manifest and sign
   assemble-and-publish:
-    needs: [prepare, build-amd64, build-arm64]
+    needs: [prepare, build-and-scan]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,16 +180,24 @@ jobs:
 
     steps:
       - name: Download AMD64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: container-amd64
           path: .
 
       - name: Download ARM64 artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: container-arm64
           path: .
+
+      - name: Download SBOMs
+        if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@v5
+        with:
+          pattern: sbom-*
+          path: sboms
+          merge-multiple: true
 
       - name: Verify downloaded artifacts
         run: |
@@ -181,6 +232,20 @@ jobs:
           ARM64_ID=$(buildah pull docker-archive:result-arm64)
           buildah manifest add --arch arm64 --os linux multiarch-manifest containers-storage:$ARM64_ID
 
+          echo "🏷️  Adding OCI annotations to manifest..."
+          buildah manifest annotate multiarch-manifest \
+            --annotation "org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --annotation "org.opencontainers.image.authors=thpham" \
+            --annotation "org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md" \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.version=$VERSION" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "org.opencontainers.image.vendor=thpham" \
+            --annotation "org.opencontainers.image.licenses=MIT" \
+            --annotation "org.opencontainers.image.title=gitlab-runner-kubevirt" \
+            --annotation "org.opencontainers.image.description=GitLab Runner executor for KubeVirt VMs"
+
           echo "🚀 Pushing multi-arch manifest to registry..."
           IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
           for tag in "${TAG_ARRAY[@]}"; do
@@ -189,13 +254,6 @@ jobs:
           done
 
           echo "✓ Multi-arch images published successfully"
-
-      - name: Run security scan
-        if: github.event_name != 'pull_request'
-        continue-on-error: true
-        run: |
-          docker load < result-amd64
-          docker scout cves ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }} || true
 
       - name: Verify multi-arch manifest
         if: github.event_name != 'pull_request'
@@ -206,3 +264,39 @@ jobs:
           echo ""
           echo "🔍 Verifying registry manifest..."
           skopeo inspect docker://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
+
+      # Image signing and SBOM attestation
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v4.0.0
+
+      - name: Sign multi-arch manifest
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          # Sign all published tags (multi-arch manifests)
+          IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
+          for tag in "${TAG_ARRAY[@]}"; do
+            echo "🔐 Signing multi-arch manifest: $tag"
+            cosign sign --yes "$tag"
+          done
+
+      - name: Attach SBOMs to image
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}"
+
+          echo "📎 Attaching AMD64 SBOM to $IMAGE_REF"
+          cosign attach sbom --sbom sboms/sbom-amd64.json "$IMAGE_REF"
+
+          echo "📎 Attaching ARM64 SBOM to $IMAGE_REF"
+          cosign attach sbom --sbom sboms/sbom-arm64.json "$IMAGE_REF"
+
+      - name: Upload SBOM reports
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sbom-reports
+          path: sboms/*.json
+          retention-days: 90
