@@ -261,6 +261,12 @@ jobs:
 
           echo "✓ Multi-arch images published successfully"
 
+          # Get the digest from the registry for secure signing
+          MANIFEST_DIGEST=$(skopeo inspect docker://$IMAGE:$VERSION | jq -r '.Digest')
+          IMAGE_DIGEST="$IMAGE@$MANIFEST_DIGEST"
+          echo "IMAGE_DIGEST=$IMAGE_DIGEST" >> $GITHUB_ENV
+          echo "📋 Manifest digest for signing: $MANIFEST_DIGEST"
+
       - name: Verify multi-arch manifest
         if: github.event_name != 'pull_request'
         run: |
@@ -276,28 +282,29 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v4.0.0
 
+      - name: Log into registry for Cosign
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign login ${{ env.REGISTRY }} -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+
       - name: Sign multi-arch manifest
         if: github.event_name != 'pull_request'
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          # Sign all published tags (multi-arch manifests)
-          IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
-          for tag in "${TAG_ARRAY[@]}"; do
-            echo "🔐 Signing multi-arch manifest: $tag"
-            cosign sign --yes "$tag"
-          done
+          # Sign the manifest using digest (immutable reference)
+          echo "🔐 Signing multi-arch manifest: ${{ env.IMAGE_DIGEST }}"
+          cosign sign --yes "${{ env.IMAGE_DIGEST }}"
 
       - name: Attach SBOMs to image
         if: github.event_name != 'pull_request'
         run: |
-          IMAGE_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}"
+          # Attach SBOMs using digest for security
+          echo "📎 Attaching AMD64 SBOM to ${{ env.IMAGE_DIGEST }}"
+          cosign attach sbom --sbom sboms/sbom-amd64.json "${{ env.IMAGE_DIGEST }}"
 
-          echo "📎 Attaching AMD64 SBOM to $IMAGE_REF"
-          cosign attach sbom --sbom sboms/sbom-amd64.json "$IMAGE_REF"
-
-          echo "📎 Attaching ARM64 SBOM to $IMAGE_REF"
-          cosign attach sbom --sbom sboms/sbom-arm64.json "$IMAGE_REF"
+          echo "📎 Attaching ARM64 SBOM to ${{ env.IMAGE_DIGEST }}"
+          cosign attach sbom --sbom sboms/sbom-arm64.json "${{ env.IMAGE_DIGEST }}"
 
       - name: Upload SBOM reports
         if: github.event_name != 'pull_request'
