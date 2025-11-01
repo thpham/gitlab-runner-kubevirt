@@ -205,8 +205,8 @@
           packages =
             with pkgs;
             [
-              # Go toolchain (using 1.25.3+ for CVE-2025-58187 fix)
-              go_1_25
+              # Go toolchain (using 1.24.9 for CVE-2025-58187 fix)
+              go_1_24
               gopls
               gotools
               go-tools
