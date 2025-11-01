@@ -1,24 +1,35 @@
 # Default entry point for NixOS base images
 {
-  nixpkgs ? <nixpkgs>,
+  pkgs ? import <nixpkgs> { },
+  nixpkgsPath ? <nixpkgs>,
   system ? builtins.currentSystem,
 }:
 
 let
-  pkgs = import nixpkgs { inherit system; };
-
-  # Build a QCOW2 image for KubeVirt
-  buildQCOW2 = config: (pkgs.nixos config).config.system.build.qcow2;
+  # Helper to build NixOS QCOW2 images
+  buildQCOW2 = modules:
+    let
+      # Evaluate the NixOS configuration
+      nixosConfig = (import "${nixpkgsPath}/nixos/lib/eval-config.nix") {
+        inherit system;
+        inherit pkgs;
+        modules = modules;
+      };
+    in
+    # Build the QCOW2 image
+    import "${nixpkgsPath}/nixos/lib/make-disk-image.nix" {
+      inherit pkgs;
+      inherit (pkgs) lib;
+      config = nixosConfig.config;
+      diskSize = "auto";
+      format = "qcow2";
+    };
 
 in
 {
   # Base image with comprehensive tooling
-  base = buildQCOW2 {
-    imports = [ ./base.nix ];
-  };
+  base = buildQCOW2 [ ./base.nix ];
 
   # Runner image with GitLab Runner integration
-  runner = buildQCOW2 {
-    imports = [ ./runner.nix ];
-  };
+  runner = buildQCOW2 [ ./runner.nix ];
 }

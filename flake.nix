@@ -140,17 +140,22 @@
           '';
         }
         # NixOS base images for KubeVirt VMs (Linux only)
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          # Base NixOS image with comprehensive tooling
-          nixos-base = (pkgs.nixos {
-            imports = [ ./microvm/nixos/base.nix ];
-          }).config.system.build.qcow2;
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux (
+          let
+            # Import the nixos image builder
+            nixosImages = import ./microvm/nixos/default.nix {
+              inherit pkgs system;
+              nixpkgsPath = nixpkgs;
+            };
+          in
+          {
+            # Base NixOS image with comprehensive tooling
+            nixos-base = nixosImages.base;
 
-          # NixOS image with GitLab Runner integration
-          nixos-runner = (pkgs.nixos {
-            imports = [ ./microvm/nixos/runner.nix ];
-          }).config.system.build.qcow2;
-        };
+            # NixOS image with GitLab Runner integration
+            nixos-runner = nixosImages.runner;
+          }
+        );
 
         # Development shell
         devShells.default = pkgs.mkShell {
