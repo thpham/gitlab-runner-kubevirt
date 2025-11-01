@@ -292,10 +292,17 @@
   # Enable guest agent for KubeVirt
   services.qemuGuest.enable = true;
 
+  # Root filesystem (required for disk images)
+  fileSystems."/" = {
+    device = "/dev/disk/by-label/nixos";
+    fsType = "ext4";
+    autoResize = true;
+  };
+
   # Systemd services optimization
   systemd.services.NetworkManager-wait-online.enable = false;
-  systemd.extraConfig = ''
-    DefaultTimeoutStartSec=30s
-    DefaultTimeoutStopSec=30s
-  '';
+  systemd.settings.Manager = {
+    DefaultTimeoutStartSec = "30s";
+    DefaultTimeoutStopSec = "30s";
+  };
 }
