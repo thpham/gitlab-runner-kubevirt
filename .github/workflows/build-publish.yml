@@ -296,15 +296,21 @@ jobs:
           echo "🔐 Signing multi-arch manifest: ${{ env.IMAGE_DIGEST }}"
           cosign sign --yes "${{ env.IMAGE_DIGEST }}"
 
-      - name: Attach SBOMs to image
+      - name: Attest SBOMs to image
         if: github.event_name != 'pull_request'
         run: |
-          # Attach SBOMs using digest for security
-          echo "📎 Attaching AMD64 SBOM to ${{ env.IMAGE_DIGEST }}"
-          cosign attach sbom --sbom sboms/sbom-amd64.json "${{ env.IMAGE_DIGEST }}"
+          # Create signed SBOM attestations using in-toto format
+          echo "📎 Creating signed AMD64 SBOM attestation for ${{ env.IMAGE_DIGEST }}"
+          cosign attest --yes \
+            --predicate sboms/sbom-amd64.json \
+            --type cyclonedx \
+            "${{ env.IMAGE_DIGEST }}"
 
-          echo "📎 Attaching ARM64 SBOM to ${{ env.IMAGE_DIGEST }}"
-          cosign attach sbom --sbom sboms/sbom-arm64.json "${{ env.IMAGE_DIGEST }}"
+          echo "📎 Creating signed ARM64 SBOM attestation for ${{ env.IMAGE_DIGEST }}"
+          cosign attest --yes \
+            --predicate sboms/sbom-arm64.json \
+            --type cyclonedx \
+            "${{ env.IMAGE_DIGEST }}"
 
       - name: Upload SBOM reports
         if: github.event_name != 'pull_request'
