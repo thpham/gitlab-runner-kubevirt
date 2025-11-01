@@ -176,7 +176,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
+      id-token: write # needed for signing the images with GitHub OIDC Token
 
     steps:
       - name: Download AMD64 artifact
@@ -215,6 +215,20 @@ jobs:
         run: |
           buildah login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ${{ env.REGISTRY }}
 
+      - name: Save current 'latest' tag for rollback
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        run: |
+          echo "💾 Saving current 'latest' tag for potential rollback..."
+          LATEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          CURRENT_LATEST=$(skopeo inspect docker://$LATEST_TAG 2>/dev/null | jq -r '.Digest' || echo "")
+          if [ -n "$CURRENT_LATEST" ] && [ "$CURRENT_LATEST" != "null" ]; then
+            echo "ROLLBACK_LATEST_DIGEST=$CURRENT_LATEST" >> $GITHUB_ENV
+            echo "  Saved latest → $CURRENT_LATEST"
+          else
+            echo "  No existing 'latest' tag to save (first build)"
+          fi
+
       - name: Create and push multi-arch manifest
         if: github.event_name != 'pull_request'
         run: |
@@ -250,7 +264,13 @@ jobs:
           buildah manifest add --arch arm64 --os linux "${ANNOTATIONS[@]}" \
             multiarch-manifest containers-storage:$ARM64_ID
 
-          echo "✓ OCI annotations added to both architectures (timestamp: $CREATED)"
+          echo "🏷️  Adding OCI annotations to multi-arch manifest..."
+          # Annotate the manifest list/index itself (not just individual images)
+          for annotation in "${ANNOTATIONS[@]}"; do
+            buildah manifest annotate --index $annotation multiarch-manifest
+          done
+
+          echo "✓ OCI annotations added to manifest and both architectures (timestamp: $CREATED)"
 
           echo "🚀 Pushing multi-arch manifest to registry..."
           IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
@@ -298,6 +318,8 @@ jobs:
 
       - name: Attest SBOMs to image
         if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
         run: |
           # Create signed SBOM attestations using in-toto format
           echo "📎 Creating signed AMD64 SBOM attestation for ${{ env.IMAGE_DIGEST }}"
@@ -312,8 +334,57 @@ jobs:
             --type cyclonedx \
             "${{ env.IMAGE_DIGEST }}"
 
-      - name: Upload SBOM reports
+      - name: Verify signature and attestations
         if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          echo "🔍 Verifying signature on ${{ env.IMAGE_DIGEST }}"
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE_DIGEST }}"
+
+          echo "✓ Signature verified successfully"
+
+          echo "🔍 Verifying SBOM attestations on ${{ env.IMAGE_DIGEST }}"
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${{ env.IMAGE_DIGEST }}"
+
+          echo "✓ Attestations verified successfully"
+
+      - name: Rollback on signing failure
+        if: github.event_name != 'pull_request' && failure()
+        continue-on-error: true
+        run: |
+          echo "⚠️  Signing/verification failed - rolling back changes"
+
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          # Restore 'latest' tag to previous good image (if we saved one)
+          if [ -n "${{ env.ROLLBACK_LATEST_DIGEST }}" ]; then
+            echo "  Restoring 'latest' tag to previous digest..."
+            skopeo copy docker://$IMAGE@${{ env.ROLLBACK_LATEST_DIGEST }} docker://$IMAGE:latest
+            echo "  ✓ Restored latest → ${{ env.ROLLBACK_LATEST_DIGEST }}"
+          fi
+
+          # Delete immutable tags (version, commit hash) that shouldn't exist for failed builds
+          IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
+          for tag in "${TAG_ARRAY[@]}"; do
+            # Skip 'latest' as we already restored it above
+            if [[ "$tag" != *":latest" ]]; then
+              echo "  Deleting immutable tag: $tag"
+              skopeo delete docker://$tag 2>&1 || echo "  (tag may not exist)"
+            fi
+          done
+
+          echo "ℹ️  Failed image digest remains in registry for debugging"
+
+      - name: Upload SBOM reports
+        if: github.event_name != 'pull_request' && success()
         uses: actions/upload-artifact@v5
         with:
           name: sbom-reports
