@@ -12,7 +12,8 @@
 
   # GitLab Runner user configuration
   users.users.gitlab-runner = {
-    isNormalUser = true;
+    isSystemUser = true;
+    group = "gitlab-runner";
     description = "GitLab Runner Service";
     extraGroups = [
       "wheel"
@@ -20,6 +21,10 @@
       "podman"
     ];
     uid = 999;
+  };
+
+  users.groups.gitlab-runner = {
+    gid = 999;
   };
 
   # Mount runner info from virtiofs
