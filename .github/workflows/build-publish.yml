@@ -220,31 +220,37 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           VERSION="${{ needs.prepare.outputs.version }}"
+          CREATED=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          # Common OCI annotations for all architectures
+          ANNOTATIONS=(
+            --annotation "org.opencontainers.image.created=$CREATED"
+            --annotation "org.opencontainers.image.authors=thpham"
+            --annotation "org.opencontainers.image.url=https://github.com/${{ github.repository }}"
+            --annotation "org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md"
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}"
+            --annotation "org.opencontainers.image.version=$VERSION"
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}"
+            --annotation "org.opencontainers.image.vendor=thpham"
+            --annotation "org.opencontainers.image.licenses=MIT"
+            --annotation "org.opencontainers.image.title=gitlab-runner-kubevirt"
+            --annotation "org.opencontainers.image.description=GitLab Runner executor for KubeVirt VMs"
+          )
 
           echo "🔨 Creating multi-arch manifest..."
           buildah manifest create multiarch-manifest
 
           echo "📥 Loading AMD64 image..."
           AMD64_ID=$(buildah pull docker-archive:result-amd64)
-          buildah manifest add --arch amd64 --os linux multiarch-manifest containers-storage:$AMD64_ID
+          buildah manifest add --arch amd64 --os linux "${ANNOTATIONS[@]}" \
+            multiarch-manifest containers-storage:$AMD64_ID
 
           echo "📥 Loading ARM64 image..."
           ARM64_ID=$(buildah pull docker-archive:result-arm64)
-          buildah manifest add --arch arm64 --os linux multiarch-manifest containers-storage:$ARM64_ID
+          buildah manifest add --arch arm64 --os linux "${ANNOTATIONS[@]}" \
+            multiarch-manifest containers-storage:$ARM64_ID
 
-          echo "🏷️  Adding OCI annotations to manifest..."
-          buildah manifest annotate multiarch-manifest \
-            --annotation "org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            --annotation "org.opencontainers.image.authors=thpham" \
-            --annotation "org.opencontainers.image.url=https://github.com/${{ github.repository }}" \
-            --annotation "org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/README.md" \
-            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --annotation "org.opencontainers.image.version=$VERSION" \
-            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
-            --annotation "org.opencontainers.image.vendor=thpham" \
-            --annotation "org.opencontainers.image.licenses=MIT" \
-            --annotation "org.opencontainers.image.title=gitlab-runner-kubevirt" \
-            --annotation "org.opencontainers.image.description=GitLab Runner executor for KubeVirt VMs"
+          echo "✓ OCI annotations added to both architectures (timestamp: $CREATED)"
 
           echo "🚀 Pushing multi-arch manifest to registry..."
           IFS=',' read -ra TAG_ARRAY <<< "${{ needs.prepare.outputs.tags }}"
