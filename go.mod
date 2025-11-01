@@ -1,8 +1,8 @@
 module github.com/thpham/gitlab-runner-kubevirt
 
-go 1.23.0
+go 1.23.0 // Uses Go 1.23 language features
 
-toolchain go1.24.0
+toolchain go1.25.3 // Builds with Go 1.25.3 compiler (has CVE fix)
 
 require (
 	barney.ci/shutil v0.1.0
