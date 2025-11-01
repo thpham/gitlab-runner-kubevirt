@@ -159,8 +159,26 @@ spec:
             - name: gc
               image: ghcr.io/thpham/gitlab-runner-kubevirt:latest
               args: ["gc", "--max-age", "3h"]
+              env:
+                - name: KUBEVIRT_EXECUTOR
+                  value: "true"
           restartPolicy: OnFailure
 ```
+
+### Container Entrypoint Behavior
+
+The container image includes both `gitlab-runner` (standard GitLab Runner) and `gitlab-runner-kubevirt` (KubeVirt executor) binaries. The entrypoint automatically routes to the appropriate binary based on the `KUBEVIRT_EXECUTOR` environment variable:
+
+- **Default** (`KUBEVIRT_EXECUTOR` not set): Executes `gitlab-runner` for standard GitLab Runner operations (register, run daemon, etc.)
+- **KubeVirt mode** (`KUBEVIRT_EXECUTOR=true`): Executes `gitlab-runner-kubevirt` for KubeVirt-specific operations (gc, cleanup, prepare, run, config)
+
+**When to use `KUBEVIRT_EXECUTOR=true`:**
+
+- Garbage collection CronJobs (as shown above)
+- Manual execution of KubeVirt executor commands
+- Standalone executor operations outside GitLab Runner daemon
+
+**Note:** When using the GitLab Runner Helm chart with custom executor configuration, you don't need to set this variable as the executor directly calls `/bin/gitlab-runner-kubevirt`.
 
 ## Development
 

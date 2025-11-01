@@ -68,8 +68,16 @@
           # Ensure data directory exists
           mkdir -p "''${DATA_DIR}"
 
-          # Launch gitlab-runner passing all arguments
-          exec ${pkgs.gitlab-runner}/bin/gitlab-runner "$@"
+          # Determine which binary to execute based on environment variable
+          # Set KUBEVIRT_EXECUTOR=true to use gitlab-runner-kubevirt (for gc, cleanup, prepare, run, config)
+          # Default: use gitlab-runner (for register, run daemon, etc.)
+          if [ "''${KUBEVIRT_EXECUTOR:-false}" = "true" ]; then
+            # Execute gitlab-runner-kubevirt for KubeVirt-specific operations
+            exec ${self.packages.${system}.gitlab-runner-kubevirt}/bin/gitlab-runner-kubevirt "$@"
+          else
+            # Execute gitlab-runner for standard GitLab Runner operations
+            exec ${pkgs.gitlab-runner}/bin/gitlab-runner "$@"
+          fi
         '';
 
       in
