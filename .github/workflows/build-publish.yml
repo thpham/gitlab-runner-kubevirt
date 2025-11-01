@@ -209,6 +209,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y buildah skopeo
+          # Verify installations
+          echo "buildah version: $(buildah --version)"
+          echo "skopeo version: $(skopeo --version)"
 
       - name: Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
@@ -266,8 +269,9 @@ jobs:
 
           echo "🏷️  Adding OCI annotations to multi-arch manifest..."
           # Annotate the manifest list/index itself (not just individual images)
+          ## --index arg is not present in ubuntu image yet.
           for annotation in "${ANNOTATIONS[@]}"; do
-            buildah manifest annotate --index $annotation multiarch-manifest
+            buildah manifest annotate $annotation multiarch-manifest
           done
 
           echo "✓ OCI annotations added to manifest and both architectures (timestamp: $CREATED)"
