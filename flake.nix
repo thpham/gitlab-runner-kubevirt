@@ -34,51 +34,17 @@
           else
             "v0.0.0-dev";
 
-        # Entrypoint script for GitLab Runner container
-        entrypoint = pkgs.writeShellScript "entrypoint" ''
-          # gitlab-runner data directory
-          DATA_DIR="/etc/gitlab-runner"
-          CONFIG_FILE=''${CONFIG_FILE:-$DATA_DIR/config.toml}
-
-          # custom certificate authority path
-          CA_CERTIFICATES_PATH=''${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
-          LOCAL_CA_PATH="/etc/ssl/certs/ca-certificates.crt"
-
-          update_ca() {
-            echo "Updating CA certificates..."
-            # In Nix containers, we combine custom CA with system CA bundle
-            if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
-              # Create temporary combined certificate bundle
-              cat ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt "''${CA_CERTIFICATES_PATH}" > /tmp/ca-bundle-combined.crt
-              export SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
-              export NIX_SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
-              echo "Custom CA certificate added to bundle"
-            fi
-          }
-
-          # Check if custom CA certificate exists and update if needed
-          if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
-            update_ca
+        # Determine the Linux system to build containers for
+        # On macOS, build Linux containers for the same architecture
+        # see: https://nixcademy.com/posts/macos-linux-builder/
+        # => on nix-darwin host add: nix.linux-builder.enable = true;
+        linuxSystem =
+          if system == "aarch64-darwin" then
+            "aarch64-linux"
+          else if system == "x86_64-darwin" then
+            "x86_64-linux"
           else
-            # Use default Nix CA bundle
-            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-            export NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-          fi
-
-          # Ensure data directory exists
-          mkdir -p "''${DATA_DIR}"
-
-          # Determine which binary to execute based on environment variable
-          # Set KUBEVIRT_EXECUTOR=true to use gitlab-runner-kubevirt (for gc, cleanup, prepare, run, config)
-          # Default: use gitlab-runner (for register, run daemon, etc.)
-          if [ "''${KUBEVIRT_EXECUTOR:-false}" = "true" ]; then
-            # Execute gitlab-runner-kubevirt for KubeVirt-specific operations
-            exec ${self.packages.${system}.gitlab-runner-kubevirt}/bin/gitlab-runner-kubevirt "$@"
-          else
-            # Execute gitlab-runner for standard GitLab Runner operations
-            exec ${pkgs.gitlab-runner}/bin/gitlab-runner "$@"
-          fi
-        '';
+            system; # Already on Linux, use current system
 
       in
       {
@@ -123,61 +89,115 @@
             };
           };
 
-          # Container image
-          container = pkgs.dockerTools.buildLayeredImage {
-            name = "ghcr.io/thpham/gitlab-runner-kubevirt";
-            tag = version;
-
-            contents = [
-              pkgs.gitlab-runner
-              self.packages.${system}.gitlab-runner-kubevirt
-              pkgs.cacert
-              pkgs.bash
-              pkgs.coreutils
-            ];
-
-            config = {
-              Entrypoint = [ "${entrypoint}" ];
-              Cmd = [ "run" ];
-              User = "gitlab-runner:gitlab-runner";
-              Env = [
-                "PATH=/bin"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                "HOME=/home/gitlab-runner"
-              ];
-              Labels = {
-                "org.opencontainers.image.source" = "https://github.com/thpham/gitlab-runner-kubevirt";
-                "org.opencontainers.image.description" = "GitLab Runner executor for KubeVirt VMs";
-                "org.opencontainers.image.version" = version;
+          # Container image (automatically builds for Linux even on macOS)
+          container =
+            let
+              # Use Linux packages for container
+              linuxPkgs = import nixpkgs {
+                system = linuxSystem;
+                overlays = [ self.overlays.default ];
               };
+
+              # Build entrypoint script for Linux container
+              linuxEntrypoint = linuxPkgs.writeShellScript "entrypoint" ''
+                # gitlab-runner data directory
+                DATA_DIR="/etc/gitlab-runner"
+                CONFIG_FILE=''${CONFIG_FILE:-$DATA_DIR/config.toml}
+
+                # custom certificate authority path
+                CA_CERTIFICATES_PATH=''${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
+                LOCAL_CA_PATH="/etc/ssl/certs/ca-certificates.crt"
+
+                update_ca() {
+                  echo "Updating CA certificates..."
+                  # In Nix containers, we combine custom CA with system CA bundle
+                  if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
+                    # Create temporary combined certificate bundle
+                    cat ${linuxPkgs.cacert}/etc/ssl/certs/ca-bundle.crt "''${CA_CERTIFICATES_PATH}" > /tmp/ca-bundle-combined.crt
+                    export SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
+                    export NIX_SSL_CERT_FILE=/tmp/ca-bundle-combined.crt
+                    echo "Custom CA certificate added to bundle"
+                  fi
+                }
+
+                # Check if custom CA certificate exists and update if needed
+                if [ -f "''${CA_CERTIFICATES_PATH}" ]; then
+                  update_ca
+                else
+                  # Use default Nix CA bundle
+                  export SSL_CERT_FILE=${linuxPkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+                  export NIX_SSL_CERT_FILE=${linuxPkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+                fi
+
+                # Ensure data directory exists
+                mkdir -p "''${DATA_DIR}"
+
+                # Determine which binary to execute based on environment variable
+                # Set KUBEVIRT_EXECUTOR=true to use gitlab-runner-kubevirt (for gc, cleanup, prepare, run, config)
+                # Default: use gitlab-runner (for register, run daemon, etc.)
+                if [ "''${KUBEVIRT_EXECUTOR:-false}" = "true" ]; then
+                  # Execute gitlab-runner-kubevirt for KubeVirt-specific operations
+                  exec ${self.packages.${linuxSystem}.gitlab-runner-kubevirt}/bin/gitlab-runner-kubevirt "$@"
+                else
+                  # Execute gitlab-runner for standard GitLab Runner operations
+                  exec ${linuxPkgs.gitlab-runner}/bin/gitlab-runner "$@"
+                fi
+              '';
+            in
+            linuxPkgs.dockerTools.buildLayeredImage {
+              name = "ghcr.io/thpham/gitlab-runner-kubevirt";
+              tag = version;
+
+              contents = [
+                linuxPkgs.gitlab-runner
+                self.packages.${linuxSystem}.gitlab-runner-kubevirt
+                linuxPkgs.cacert
+                linuxPkgs.bash
+                linuxPkgs.coreutils
+              ];
+
+              config = {
+                Entrypoint = [ "${linuxEntrypoint}" ];
+                Cmd = [ "run" ];
+                User = "gitlab-runner:gitlab-runner";
+                Env = [
+                  "PATH=/bin"
+                  "SSL_CERT_FILE=${linuxPkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                  "HOME=/home/gitlab-runner"
+                ];
+                Labels = {
+                  "org.opencontainers.image.source" = "https://github.com/thpham/gitlab-runner-kubevirt";
+                  "org.opencontainers.image.description" = "GitLab Runner executor for KubeVirt VMs";
+                  "org.opencontainers.image.version" = version;
+                };
+              };
+
+              # Set the architecture for the image based on linuxSystem
+              architecture =
+                if linuxSystem == "x86_64-linux" then
+                  "amd64"
+                else if linuxSystem == "aarch64-linux" then
+                  "arm64"
+                else
+                  linuxPkgs.stdenv.hostPlatform.linuxArch;
+
+              extraCommands = ''
+                # Create gitlab-runner user and group
+                echo "gitlab-runner:x:999:999:GitLab Runner:/home/gitlab-runner:/bin/bash" > etc/passwd
+                echo "gitlab-runner:x:999:" > etc/group
+              '';
+
+              fakeRootCommands = ''
+                # Create necessary directories with proper ownership
+                mkdir -p etc/gitlab-runner/certs
+                mkdir -p home/gitlab-runner
+                mkdir -p tmp
+
+                # Set ownership to gitlab-runner user (UID 999, GID 999)
+                chown -R 999:999 home/gitlab-runner
+                chmod 1777 tmp
+              '';
             };
-
-            # Set the architecture for the image
-            architecture =
-              if system == "x86_64-linux" then
-                "amd64"
-              else if system == "aarch64-linux" then
-                "arm64"
-              else
-                pkgs.stdenv.hostPlatform.linuxArch;
-
-            extraCommands = ''
-              # Create gitlab-runner user and group
-              echo "gitlab-runner:x:999:999:GitLab Runner:/home/gitlab-runner:/bin/bash" > etc/passwd
-              echo "gitlab-runner:x:999:" > etc/group
-            '';
-
-            fakeRootCommands = ''
-              # Create necessary directories with proper ownership
-              mkdir -p etc/gitlab-runner/certs
-              mkdir -p home/gitlab-runner
-              mkdir -p tmp
-
-              # Set ownership to gitlab-runner user (UID 999, GID 999)
-              chown -R 999:999 home/gitlab-runner
-              chmod 1777 tmp
-            '';
-          };
 
           # Multi-architecture container images
           container-manifest = pkgs.writeShellScriptBin "build-multiarch" ''
