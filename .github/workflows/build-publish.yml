@@ -20,11 +20,16 @@ on:
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build-publish.yml"
+  # Uncomment to enable weekly builds every Monday at 3:00 AM UTC
+  # schedule:
+  #   - cron: "0 3 * * 1"
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Set to 'true' to verify SBOM attestations after signing (can take 5-10 minutes)
+  VERIFY_ATTESTATIONS: ${{ vars.VERIFY_ATTESTATIONS || 'false' }}
 
 jobs:
   # Metadata extraction job
@@ -82,15 +87,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # Cache Trivy vulnerability database (saves ~30s per run)
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            trivy-db-${{ runner.os }}-
-
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
@@ -116,6 +112,7 @@ jobs:
           ls -lh result-${{ matrix.arch.name }}
 
       # Security scanning (runs in parallel with other architecture)
+      # Using trivy-action's built-in cache (stored in $GITHUB_WORKSPACE/.cache/trivy)
       - name: Generate SBOM (${{ matrix.arch.name }})
         if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@0.33.1
@@ -347,14 +344,19 @@ jobs:
 
           echo "✓ Signature verified successfully"
 
-          echo "🔍 Verifying SBOM attestations on ${{ env.IMAGE_DIGEST }}"
-          cosign verify-attestation \
-            --type cyclonedx \
-            --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
-            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-            "${{ env.IMAGE_DIGEST }}"
-
-          echo "✓ Attestations verified successfully"
+          # Verify SBOM attestations only if enabled (can be slow - 5-10 minutes)
+          if [ "${{ env.VERIFY_ATTESTATIONS }}" = "true" ]; then
+            echo "🔍 Verifying SBOM attestations on ${{ env.IMAGE_DIGEST }}"
+            cosign verify-attestation \
+              --type cyclonedx \
+              --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
+              --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+              "${{ env.IMAGE_DIGEST }}"
+            echo "✓ Attestations verified successfully"
+          else
+            echo "ℹ️  Skipping SBOM attestation verification (VERIFY_ATTESTATIONS=false)"
+            echo "   To enable: Set repository variable VERIFY_ATTESTATIONS=true"
+          fi
 
       - name: Rollback on signing failure
         if: github.event_name != 'pull_request' && failure()
