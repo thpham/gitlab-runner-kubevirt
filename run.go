@@ -21,10 +21,11 @@ import (
 )
 
 type SSHConfig struct {
-	Port     string `name:"port" default:"22" help:"Port to ssh to"`
-	User     string `name:"user" help:"ssh username"`
-	Password string `name:"password" xor:"auth" help:"ssh password"`
-	PrivKey  string `name:"private-key-file" xor:"auth" help:"ssh private key"`
+	Port      string `name:"port" default:"22" help:"Port to ssh to"`
+	User      string `name:"user" help:"ssh username"`
+	Password  string `name:"password" xor:"auth" help:"ssh password (for config only, not stored)"`
+	PrivKey   string `name:"private-key-file" xor:"auth" help:"ssh private key"`
+	SecretRef string `json:"secret_ref,omitempty"` // Reference to Kubernetes Secret with credentials
 }
 
 type RunConfig struct {
@@ -53,6 +54,29 @@ func (cmd *RunCmd) Run(ctx context.Context, client kubevirt.KubevirtClient, jctx
 	var rc RunConfig
 	if err := json.Unmarshal([]byte(vm.Annotations[RunConfigKey]), &rc); err != nil {
 		return err
+	}
+
+	// Retrieve SSH credentials from Kubernetes Secret
+	if rc.SSH.SecretRef != "" {
+		cfg, err := KubeConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get kubernetes config: %w", err)
+		}
+
+		sshConfig, err := GetSSHSecret(ctx, cfg, jctx.Namespace, rc.SSH.SecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to retrieve SSH credentials from secret %s: %w", rc.SSH.SecretRef, err)
+		}
+
+		// Merge credentials from Secret with configuration from RunConfig
+		rc.SSH.User = sshConfig.User
+		rc.SSH.Password = sshConfig.Password
+		// Port from RunConfig takes precedence (may be customized)
+		if rc.SSH.Port == "" {
+			rc.SSH.Port = sshConfig.Port
+		}
+
+		fmt.Fprintf(Debug, "Retrieved SSH credentials from secret: %s\n", rc.SSH.SecretRef)
 	}
 
 	if vm.Status.Phase != "Running" {
@@ -116,7 +140,7 @@ func (cmd *RunCmd) Run(ctx context.Context, client kubevirt.KubevirtClient, jctx
 			} else {
 				fmt.Fprintf(Debug, "<ERROR: %v>", err)
 			}
-			fmt.Fprintf(Debug, "---\n", cmd.Script)
+			fmt.Fprintln(Debug, "---")
 		}
 
 		argv := generateShellArgv(rc.Shell, scriptPath)

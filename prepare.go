@@ -68,12 +68,44 @@ func (cmd *PrepareCmd) Run(ctx context.Context, client kubevirt.KubevirtClient, 
 		jctx.Architecture = cmd.DefaultArchitecture
 	}
 
+	// Generate random password for this VM
+	randomPassword, err := GenerateSecurePassword(32)
+	if err != nil {
+		return fmt.Errorf("failed to generate password: %w", err)
+	}
+
+	// Generate cloud-init user-data with random password (OS-specific based on shell)
+	cloudInitUserData, err := GenerateCloudInitUserData(cmd.Shell, cmd.SSH.User, randomPassword)
+	if err != nil {
+		return fmt.Errorf("failed to generate cloud-init: %w", err)
+	}
+
+	// Get K8s config for Secret operations
+	cfg, err := KubeConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get kubernetes config: %w", err)
+	}
+
+	// Create Secret with SSH credentials and cloud-init userdata
+	secret, err := CreateVMSecret(ctx, cfg, jctx.Namespace, jctx, cmd.SSH.User, randomPassword, cloudInitUserData)
+	if err != nil {
+		return fmt.Errorf("failed to create VM secret: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Created VM credentials secret: %s\n", secret.Name)
+
+	// Update RunConfig to reference secret (not store password)
 	rc := cmd.RunConfig
+	rc.SSH.Password = ""           // Clear password from config
+	rc.SSH.SecretRef = secret.Name // Store secret reference
 
 	fmt.Fprintf(os.Stderr, "Creating Virtual Machine instance\n")
 
-	vm, err := CreateJobVM(ctx, client, jctx, &rc)
+	// Create VM with secret reference (KubeVirt will read userdata from Secret)
+	vm, err := CreateJobVM(ctx, client, jctx, &rc, secret.Name)
 	if err != nil {
+		// Cleanup secret if VM creation fails
+		_ = DeleteSSHSecret(ctx, cfg, jctx.Namespace, secret.Name)
 		return err
 	}
 

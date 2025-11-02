@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -84,6 +85,21 @@ func (cmd *GCCmd) Run(ctx context.Context, jctx *JobContext) error {
 				fmt.Fprintf(os.Stderr, "🗑️  [DRY-RUN] Would delete VM %s (age: %s, ttl: %s)\n", vm.Name, age.Round(time.Second), ttl)
 			} else {
 				fmt.Fprintf(os.Stderr, "🗑️  Deleting expired VM %s (age: %s, ttl: %s)\n", vm.Name, age.Round(time.Second), ttl)
+
+				// Delete SSH credentials Secret before deleting the VM
+				var rc RunConfig
+				if err := json.Unmarshal([]byte(vm.Annotations[RunConfigKey]), &rc); err == nil {
+					if rc.SSH.SecretRef != "" {
+						if err := DeleteSSHSecret(ctx, config, namespace, rc.SSH.SecretRef); err != nil {
+							fmt.Fprintf(os.Stderr, "⚠️  Warning: failed to delete SSH secret %s: %v\n", rc.SSH.SecretRef, err)
+						} else {
+							fmt.Fprintf(os.Stderr, "   Deleted SSH credentials secret: %s\n", rc.SSH.SecretRef)
+						}
+					}
+				} else if vm.Annotations[RunConfigKey] != "" {
+					fmt.Fprintf(os.Stderr, "⚠️  Warning: failed to unmarshal RunConfig for secret cleanup: %v\n", err)
+				}
+
 				err := client.VirtualMachineInstance(namespace).Delete(ctx, vm.Name, metav1.DeleteOptions{})
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "❌ Failed to delete VM %s: %v\n", vm.Name, err)

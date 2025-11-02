@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -42,6 +43,25 @@ func (cmd *CleanupCmd) Run(ctx context.Context, client kubevirt.KubevirtClient, 
 	}
 
 	fmt.Fprintf(os.Stderr, "Deleting Virtual Machine instance %v\n", vm.ObjectMeta.Name)
+
+	// Delete SSH credentials Secret before deleting the VM
+	var rc RunConfig
+	if err := json.Unmarshal([]byte(vm.Annotations[RunConfigKey]), &rc); err == nil {
+		if rc.SSH.SecretRef != "" {
+			cfg, err := KubeConfig()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to get kubernetes config for secret cleanup: %v\n", err)
+			} else {
+				if err := DeleteSSHSecret(ctx, cfg, jctx.Namespace, rc.SSH.SecretRef); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to delete SSH secret %s: %v\n", rc.SSH.SecretRef, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "Deleted SSH credentials secret: %s\n", rc.SSH.SecretRef)
+				}
+			}
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: failed to unmarshal RunConfig for secret cleanup: %v\n", err)
+	}
 
 	deleteOptions := &metav1.DeleteOptions{}
 

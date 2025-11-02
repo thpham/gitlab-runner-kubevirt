@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 
 	k8sapi "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -55,6 +57,7 @@ func CreateJobVM(
 	client kubevirt.KubevirtClient,
 	jctx *JobContext,
 	rc *RunConfig,
+	secretName string,
 ) (*kubevirtapi.VirtualMachineInstance, error) {
 
 	resources := kubevirtapi.ResourceRequirements{
@@ -107,6 +110,9 @@ func CreateJobVM(
 			Disks: []kubevirtapi.Disk{
 				{
 					Name: "root",
+				},
+				{
+					Name: "cloudinit",
 				},
 			},
 		},
@@ -171,6 +177,16 @@ func CreateJobVM(
 							Image:           jctx.Image,
 							ImagePullPolicy: k8sapi.PullPolicy(jctx.ImagePullPolicy),
 							ImagePullSecret: jctx.ImagePullSecret,
+						},
+					},
+				},
+				{
+					Name: "cloudinit",
+					VolumeSource: kubevirtapi.VolumeSource{
+						CloudInitNoCloud: &kubevirtapi.CloudInitNoCloudSource{
+							UserDataSecretRef: &k8sapi.LocalObjectReference{
+								Name: secretName,
+							},
 						},
 					},
 				},
@@ -265,4 +281,103 @@ outer:
 			}
 		}
 	}
+}
+
+// CreateVMSecret creates a Kubernetes Secret with SSH credentials and cloud-init userdata
+func CreateVMSecret(
+	ctx context.Context,
+	cfg *rest.Config,
+	namespace string,
+	jctx *JobContext,
+	user string,
+	password string,
+	cloudInitUserData string,
+) (*k8sapi.Secret, error) {
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	secretName := fmt.Sprintf("vm-creds-%s", jctx.ID)
+	secret := &k8sapi.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				labelPrefix + "/id":   jctx.ID,
+				labelPrefix + "/type": "vm-credentials",
+			},
+		},
+		Type: k8sapi.SecretTypeOpaque,
+		StringData: map[string]string{
+			"user":     user,
+			"password": password,
+			"userdata": cloudInitUserData,
+		},
+	}
+
+	created, err := clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secret: %w", err)
+	}
+
+	return created, nil
+}
+
+// CreateSSHSecret is a backward-compatible alias for CreateVMSecret
+// Deprecated: Use CreateVMSecret instead
+func CreateSSHSecret(
+	ctx context.Context,
+	cfg *rest.Config,
+	namespace string,
+	jctx *JobContext,
+	user string,
+	password string,
+) (*k8sapi.Secret, error) {
+	// For backward compatibility, create Secret without userdata
+	return CreateVMSecret(ctx, cfg, namespace, jctx, user, password, "")
+}
+
+// GetSSHSecret retrieves SSH credentials from a Kubernetes Secret
+func GetSSHSecret(
+	ctx context.Context,
+	cfg *rest.Config,
+	namespace string,
+	secretName string,
+) (*SSHConfig, error) {
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret: %w", err)
+	}
+
+	return &SSHConfig{
+		User:     string(secret.Data["user"]),
+		Password: string(secret.Data["password"]),
+		Port:     "22", // Default port
+	}, nil
+}
+
+// DeleteSSHSecret deletes the SSH credentials Secret
+func DeleteSSHSecret(
+	ctx context.Context,
+	cfg *rest.Config,
+	namespace string,
+	secretName string,
+) error {
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	err = clientset.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete secret: %w", err)
+	}
+
+	return nil
 }
